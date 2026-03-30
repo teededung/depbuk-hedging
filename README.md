@@ -2,6 +2,16 @@
 
 DeepBook hedging bot on Sui built on top of the current SvelteKit starter. It runs a server-side bot loop with two separate accounts and a realtime dashboard that mirrors the requested dark trading layout.
 
+> **⚠️ Cảnh báo bảo mật / Security Warning**
+>
+> Dự án này được xây dựng với mục đích học tập và nghiên cứu DeFi. Chỉ nên chạy trên `localhost` — **không triển khai lên server công khai** để tránh lộ private key và tài sản của bạn.
+>
+> This project is built for DeFi learning and research purposes only. Run on `localhost` only — **do not deploy to a public server** to protect your private keys and funds.
+>
+> Tác giả không chịu trách nhiệm cho bất kỳ tổn thất tài chính nào phát sinh từ việc sử dụng phần mềm này. Sử dụng hoàn toàn trên rủi ro của bạn.
+>
+> The author assumes no liability for any financial losses arising from the use of this software. Use entirely at your own risk.
+
 ## What it does
 
 - Uses two isolated accounts:
