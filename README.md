@@ -116,7 +116,7 @@ pnpm start
 
 Open:
 
-- Dashboard: [http://localhost:5177](http://localhost:5177) in dev
+- Dashboard: [http://localhost:5187](http://localhost:5187) in dev
 - Node build: [http://localhost:3000](http://localhost:3000) after `pnpm start`
 
 ## Dashboard
