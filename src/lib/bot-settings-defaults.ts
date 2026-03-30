@@ -4,7 +4,7 @@ const DEFAULT_UPDATED_AT = new Date(0).toISOString();
 
 export const BOT_SETTINGS_DEFAULTS: BotSettingsUpdateInput = {
 	network: 'mainnet',
-	rpc_url: 'https://fullnode.mainnet.sui.io:443',
+	rpc_url: 'https://fullnode.mainnet.sui.io:443\nhttps://sui-rpc.publicnode.com/',
 	experimental_deeptrade_limit_ptb: false,
 	deeptrade_orderbook_api_base: 'https://api.deeptrade.space/api',
 	pool_key: 'SUI_USDC',

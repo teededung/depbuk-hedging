@@ -77,7 +77,9 @@ Open the dashboard and use the `Settings` button in the topbar.
 The first boot seeds one global settings record in Postgres with defaults such as:
 
 - `network: mainnet`
-- `rpc_url: https://fullnode.mainnet.sui.io:443`
+- `rpc_url`: two default RPC endpoints (newline-separated):
+  - `https://fullnode.mainnet.sui.io:443`
+  - `https://sui-rpc.publicnode.com/`
 - `deeptrade_orderbook_api_base: https://api.deeptrade.space/api`
 - `pool_key: SUI_USDC`
 - `notional_size_usd: 10`
