@@ -1,4 +1,4 @@
-import type { BotSettingsView, RuntimeSnapshot } from '$lib/types/bot.js';
+import type { BotSettingsView, NotionalMaxPreview, RuntimeSnapshot } from '$lib/types/bot.js';
 
 import type { SettingsForm } from './page-view.js';
 
@@ -9,6 +9,10 @@ export type SettingsPayload = {
 
 type SettingsErrorPayload = {
 	error?: string;
+};
+
+export type NotionalMaxPayload = {
+	preview: NotionalMaxPreview;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -76,4 +80,23 @@ export async function swapBotSettings(): Promise<{ snapshot: RuntimeSnapshot }> 
 		throw new Error('Swap failed');
 	}
 	return readJson<{ snapshot: RuntimeSnapshot }>(response);
+}
+
+export async function fetchNotionalMaxPreview(): Promise<NotionalMaxPayload> {
+	const response = await fetch('/api/bot/notional-max');
+	let payload: NotionalMaxPayload | SettingsErrorPayload | null = null;
+	try {
+		payload = (await response.json()) as NotionalMaxPayload | SettingsErrorPayload;
+	} catch {
+		payload = null;
+	}
+
+	if (!response.ok || !payload || !('preview' in payload)) {
+		throw new Error(
+			(payload && 'error' in payload && payload.error) ||
+				`Failed to estimate notional max (${response.status})`
+		);
+	}
+
+	return payload;
 }

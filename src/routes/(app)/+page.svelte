@@ -22,6 +22,7 @@
 	} from './_helpers/page-view.js';
 	import {
 		fetchBotControl,
+		fetchNotionalMaxPreview,
 		fetchBotSettings,
 		fetchBotStatus,
 		saveBotSettings,
@@ -337,6 +338,32 @@
 		}
 	}
 
+	async function applyMaxNotional(): Promise<void> {
+		if (settingsPending || settingsSaving) return;
+
+		try {
+			const { preview } = await fetchNotionalMaxPreview();
+			settingsForm.notional_size_usd = preview.recommendedNotionalUsd;
+			settingsError = null;
+			settingsSuccess = `Notional set to $${preview.recommendedNotionalUsd.toFixed(1)} (safe max $${preview.maxAffordableNotionalUsd.toFixed(1)}, ${preview.headroomPercent}% headroom).`;
+			toast.success({
+				title: 'Notional Max Applied',
+				message: settingsSuccess,
+				durationMs: 3200
+			});
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : 'Failed to estimate max notional from current balances.';
+			settingsError = message;
+			toast.error({
+				title: 'Max notional unavailable',
+				message,
+				durationMs: 4200
+			});
+			throw new Error(message);
+		}
+	}
+
 	async function confirmPrompt(): Promise<void> {
 		const mode = promptMode;
 		if (mode === 'start' && !modalPreflight.ready) {
@@ -593,6 +620,7 @@
 		{settingsErrors}
 		bind:settingsForm
 		onSave={saveSettings}
+		onApplyNotionalMax={applyMaxNotional}
 	/>
 
 	<DepositModal

@@ -21,6 +21,7 @@ import type {
 import { RuntimeCycleExecutor } from './runtime-cycle-executor.js';
 import {
 	buildAutoBalancePreview,
+	computeMaxAffordableNotional,
 	buildPostCycleFundingMaintenancePlan,
 	buildBalancesAndPreflightSnapshotUpdate,
 	buildBlockingReason,
@@ -63,6 +64,7 @@ import type {
 	BotLogEntry,
 	BotSettingsView,
 	CycleOrderRecord,
+	NotionalMaxPreview,
 	RuntimeSnapshot
 } from './types.js';
 
@@ -85,6 +87,7 @@ const POST_CYCLE_FUNDING_TARGET_CYCLES = 2;
 const POST_CYCLE_FUNDING_MIN_TRANSFER_USDC = 0.5;
 const POST_CYCLE_FUNDING_MIN_SWAP_SHORTFALL_USDC = 0.5;
 const POST_CYCLE_FUNDING_MIN_SWAP_SUI_IN = 0.0001;
+const NOTIONAL_MAX_HEADROOM_PERCENT = 5;
 
 export class BotRuntime {
 	#snapshot: RuntimeSnapshot = createSnapshot();
@@ -1197,7 +1200,7 @@ export class BotRuntime {
 		await this.#db.updateCycleOrders(this.#currentCycleId, this.#currentCycleOrders);
 		await this.#db.finishCycle(this.#currentCycleId, {
 			status,
-			volumeUsd: 0,
+			volumeUsd: sumFilledCycleOrderVolumeUsd(this.#currentCycleOrders),
 			feesUsd: sumCycleOrderFeesUsd(this.#currentCycleOrders),
 			gasUsd: round(
 				sumCycleOrderGasUsd(this.#currentCycleOrders) + this.#currentCycleAuxiliaryGasUsd,
@@ -1253,6 +1256,49 @@ export class BotRuntime {
 			preflight,
 			updatedAt: nowIso()
 		});
+	}
+
+	async previewNotionalMax(): Promise<NotionalMaxPreview> {
+		await this.ensureBooted(this.#snapshot.lifecycle === 'CONFIG_REQUIRED');
+		if (!this.#service || !this.#accounts || !this.#config) {
+			throw new Error('Runtime is not initialized.');
+		}
+
+		const livePrice = await this.#service.getLivePriceQuote(this.#accounts).catch(() => ({
+			price: this.#snapshot.price.price,
+			source: this.#snapshot.price.source
+		}));
+		const referencePrice = livePrice.price;
+		if (!Number.isFinite(referencePrice) || referencePrice <= 0) {
+			throw new Error('Waiting for a live SUI price quote.');
+		}
+
+		const balances = await this.#service.getWalletBalances(this.#accounts, referencePrice);
+		this.#updateBalancesAndPreflight(balances, referencePrice);
+
+		const ceiling = computeMaxAffordableNotional({
+			config: this.#config,
+			balances,
+			referencePrice
+		});
+		const safeMax = Math.floor(Math.max(ceiling.maxAffordableNotionalUsd, 0) * 10) / 10;
+		if (safeMax < 0.1) {
+			throw new Error('Current wallet balances are too low to derive a safe max notional.');
+		}
+
+		const recommendedRaw = safeMax * (1 - NOTIONAL_MAX_HEADROOM_PERCENT / 100);
+		const recommendedNotionalUsd = Math.floor(Math.max(recommendedRaw, 0.1) * 10) / 10;
+
+		return {
+			referencePrice: round(referencePrice, 6),
+			accountACeilingUsd: ceiling.accountACeilingUsd,
+			accountBCeilingUsd: ceiling.accountBCeilingUsd,
+			maxAffordableNotionalUsd: safeMax,
+			recommendedNotionalUsd,
+			headroomPercent: NOTIONAL_MAX_HEADROOM_PERCENT,
+			limitingAccount: ceiling.limitingAccount,
+			updatedAt: nowIso()
+		};
 	}
 
 	async previewAutoBalance(targetCycles: number): Promise<AutoBalancePreview> {

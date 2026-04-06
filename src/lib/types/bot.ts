@@ -130,6 +130,17 @@ export interface BotSettingsUpdateInput {
 	notional_auto_reduce_floor_pct: number;
 }
 
+export interface NotionalMaxPreview {
+	referencePrice: number;
+	accountACeilingUsd: number;
+	accountBCeilingUsd: number;
+	maxAffordableNotionalUsd: number;
+	recommendedNotionalUsd: number;
+	headroomPercent: number;
+	limitingAccount: 'accountA' | 'accountB' | 'both';
+	updatedAt: string;
+}
+
 export interface BotLogEntry {
 	id: number;
 	level: 'debug' | 'info' | 'success' | 'warn' | 'error';

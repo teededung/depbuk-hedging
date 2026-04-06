@@ -7,6 +7,7 @@ import {
 	buildPostCycleFundingMaintenancePlan,
 	buildPreflightSnapshot,
 	computeEffectiveNotional,
+	computeMaxAffordableNotional,
 	createEmptyBalances,
 	createEmptyStartReadiness,
 	estimateAutoBalanceReservePerExtraCycleUsdc,
@@ -417,6 +418,54 @@ describe('auto-balance preview', () => {
 		expect(result.belowFloor).toBe(true);
 		expect(result.minNotionalUsd).toBe(21);
 		expect(result.effectiveNotionalUsd).toBe(12);
+	});
+
+	it('computes max affordable notional and limiting account', () => {
+		const config = createConfig();
+		config.random_size_bps = 0;
+		config.auto_swap_buffer_bps = 0;
+		config.slippage_tolerance = 0;
+		config.min_gas_reserve_sui = 0;
+		config.account_a_borrow_quote_factor = 1;
+		config.account_b_borrow_base_factor = 1;
+
+		const balances = createEmptyBalances();
+		balances.accountA.usdc = 60;
+		balances.accountB.usdc = 100;
+
+		const result = computeMaxAffordableNotional({
+			config,
+			balances,
+			referencePrice: 1
+		});
+
+		expect(result.accountACeilingUsd).toBe(60);
+		expect(result.accountBCeilingUsd).toBe(100);
+		expect(result.maxAffordableNotionalUsd).toBe(60);
+		expect(result.limitingAccount).toBe('accountA');
+	});
+
+	it('marks both as limiting when account ceilings are effectively equal', () => {
+		const config = createConfig();
+		config.random_size_bps = 0;
+		config.auto_swap_buffer_bps = 0;
+		config.slippage_tolerance = 0;
+		config.min_gas_reserve_sui = 0;
+		config.account_a_borrow_quote_factor = 1;
+		config.account_b_borrow_base_factor = 1;
+
+		const balances = createEmptyBalances();
+		balances.accountA.usdc = 80;
+		balances.accountB.usdc = 80;
+
+		const result = computeMaxAffordableNotional({
+			config,
+			balances,
+			referencePrice: 1
+		});
+
+		expect(result.maxAffordableNotionalUsd).toBe(80);
+		expect(result.limitingAccount).toBe('both');
 	});
 });
 

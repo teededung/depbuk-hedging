@@ -17,6 +17,7 @@
 		settingsErrors: SettingsErrors;
 		settingsForm: SettingsForm;
 		onSave: () => void;
+		onApplyNotionalMax: () => Promise<void> | void;
 	};
 
 	let {
@@ -29,11 +30,14 @@
 		settingsSuccess,
 		settingsErrors,
 		settingsForm = $bindable(),
-		onSave
+		onSave,
+		onApplyNotionalMax
 	}: Props = $props();
 
 	let leverageMode = $state<'both' | 'custom'>('both');
 	let lastOpen = $state(false);
+	let notionalMaxPending = $state(false);
+	let notionalMaxError = $state<string | null>(null);
 
 	const sharedLeverage = $derived(
 		settingsForm.account_a_borrow_quote_factor === settingsForm.account_b_borrow_base_factor
@@ -47,6 +51,10 @@
 				settingsForm.account_a_borrow_quote_factor === settingsForm.account_b_borrow_base_factor
 					? 'both'
 					: 'custom';
+		}
+		if (!open) {
+			notionalMaxError = null;
+			notionalMaxPending = false;
 		}
 		lastOpen = open;
 	});
@@ -94,6 +102,23 @@
 	function updateCloseOrderExecutionMode(event: Event) {
 		settingsForm.close_order_execution_mode = (event.currentTarget as HTMLSelectElement)
 			.value as SettingsForm['close_order_execution_mode'];
+	}
+
+	async function applyNotionalMax(): Promise<void> {
+		if (notionalMaxPending || settingsPending || settingsSaving) {
+			return;
+		}
+
+		notionalMaxPending = true;
+		notionalMaxError = null;
+		try {
+			await onApplyNotionalMax();
+		} catch (error) {
+			notionalMaxError =
+				error instanceof Error ? error.message : 'Failed to apply server-calculated max notional.';
+		} finally {
+			notionalMaxPending = false;
+		}
 	}
 </script>
 
@@ -206,16 +231,34 @@
 							</div>
 							<div class="space-y-4">
 								<div class="grid gap-4 md:grid-cols-2">
-									<label class="floating-label">
-										<span>Notional size (USD)</span>
-										<input
-											type="number"
-											step="0.0001"
-											class="input w-full"
-											placeholder="4"
-											bind:value={settingsForm.notional_size_usd}
-										/>
-									</label>
+									<fieldset class="fieldset">
+										<label class="floating-label">
+											<span>Notional size (USD)</span>
+											<input
+												type="number"
+												step="0.0001"
+												class="input w-full"
+												placeholder="4"
+												bind:value={settingsForm.notional_size_usd}
+											/>
+										</label>
+										<div class="mt-2 flex items-center gap-2">
+											<button
+												type="button"
+												class="btn btn-xs btn-outline"
+												onclick={applyNotionalMax}
+												disabled={notionalMaxPending || settingsPending || settingsSaving}
+											>
+												{notionalMaxPending ? 'Calculating...' : 'Max'}
+											</button>
+											<span class="text-xs text-base-content/65">
+												Server-calculated safe max with 5% headroom.
+											</span>
+										</div>
+										{#if notionalMaxError}
+											<p class="label text-error">{notionalMaxError}</p>
+										{/if}
+									</fieldset>
 									<fieldset class="fieldset">
 										<label class="floating-label">
 											<span>Auto-reduce floor (%)</span>

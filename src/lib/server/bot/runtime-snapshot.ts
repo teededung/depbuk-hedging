@@ -244,30 +244,11 @@ export function computeEffectiveNotional(input: {
 		};
 	}
 
-	const affordableA = computeAccountAffordableNotionalUsd({
-		accountKey: 'accountA',
-		usdcAvailable: balances.accountA.usdc,
-		suiAvailable: balances.accountA.sui,
-		borrowFactor: config.account_a_borrow_quote_factor,
-		autoSwapEnabled: config.auto_swap_enabled,
-		autoSwapBufferBps: config.auto_swap_buffer_bps,
-		slippageTolerance: config.slippage_tolerance,
-		minGasReserveSui: config.min_gas_reserve_sui,
+	const { maxAffordableNotionalUsd } = computeMaxAffordableNotional({
+		config,
+		balances,
 		referencePrice
 	});
-	const affordableB = computeAccountAffordableNotionalUsd({
-		accountKey: 'accountB',
-		usdcAvailable: balances.accountB.usdc,
-		suiAvailable: balances.accountB.sui,
-		borrowFactor: config.account_b_borrow_base_factor,
-		autoSwapEnabled: config.auto_swap_enabled,
-		autoSwapBufferBps: config.auto_swap_buffer_bps,
-		slippageTolerance: config.slippage_tolerance,
-		minGasReserveSui: config.min_gas_reserve_sui,
-		referencePrice
-	});
-
-	const maxAffordableNotionalUsd = Math.min(affordableA, affordableB);
 
 	if (maxAffordableNotionalUsd + 1e-4 >= configuredNotionalUsd) {
 		return {
@@ -302,6 +283,55 @@ export function computeEffectiveNotional(input: {
 		autoReduced: true,
 		belowFloor: false,
 		autoReducedReason: `Reduced from $${configuredNotionalUsd.toFixed(2)} due to available funding.`
+	};
+}
+
+export function computeMaxAffordableNotional(input: {
+	config: BotConfig;
+	balances: RuntimeSnapshot['balances'];
+	referencePrice: number;
+}): {
+	accountACeilingUsd: number;
+	accountBCeilingUsd: number;
+	maxAffordableNotionalUsd: number;
+	limitingAccount: 'accountA' | 'accountB' | 'both';
+} {
+	const { config, balances, referencePrice } = input;
+	const affordableA = computeAccountAffordableNotionalUsd({
+		accountKey: 'accountA',
+		usdcAvailable: balances.accountA.usdc,
+		suiAvailable: balances.accountA.sui,
+		borrowFactor: config.account_a_borrow_quote_factor,
+		autoSwapEnabled: config.auto_swap_enabled,
+		autoSwapBufferBps: config.auto_swap_buffer_bps,
+		slippageTolerance: config.slippage_tolerance,
+		minGasReserveSui: config.min_gas_reserve_sui,
+		referencePrice
+	});
+	const affordableB = computeAccountAffordableNotionalUsd({
+		accountKey: 'accountB',
+		usdcAvailable: balances.accountB.usdc,
+		suiAvailable: balances.accountB.sui,
+		borrowFactor: config.account_b_borrow_base_factor,
+		autoSwapEnabled: config.auto_swap_enabled,
+		autoSwapBufferBps: config.auto_swap_buffer_bps,
+		slippageTolerance: config.slippage_tolerance,
+		minGasReserveSui: config.min_gas_reserve_sui,
+		referencePrice
+	});
+
+	const accountACeilingUsd = round(Math.max(affordableA, 0), 4);
+	const accountBCeilingUsd = round(Math.max(affordableB, 0), 4);
+	const maxAffordableNotionalUsd = round(Math.max(Math.min(affordableA, affordableB), 0), 4);
+	const delta = Math.abs(accountACeilingUsd - accountBCeilingUsd);
+	const limitingAccount: 'accountA' | 'accountB' | 'both' =
+		delta <= 1e-4 ? 'both' : accountACeilingUsd < accountBCeilingUsd ? 'accountA' : 'accountB';
+
+	return {
+		accountACeilingUsd,
+		accountBCeilingUsd,
+		maxAffordableNotionalUsd,
+		limitingAccount
 	};
 }
 

@@ -207,14 +207,28 @@
 				<div class="grid gap-4 lg:grid-cols-2">
 					{#each [preview.accountA, preview.accountB] as acct}
 						<div class="card border border-base-300 bg-base-200 shadow-sm">
-							<div class="card-body gap-3 p-4">
-								<div class="flex items-start justify-between gap-3">
-									<p class="text-sm font-semibold">{acct.label}</p>
-									<span class={`badge badge-sm whitespace-nowrap ${stateBadge(acct.state)}`}>
-										{stateLabel(acct.state)}
-									</span>
-								</div>
-								<div class="mt-2 space-y-2 text-sm">
+								<div class="card-body gap-3 p-4">
+									<div class="flex items-start justify-between gap-3">
+										<p class="text-sm font-semibold">{acct.label}</p>
+										<span class={`badge badge-sm whitespace-nowrap ${stateBadge(acct.state)}`}>
+											{stateLabel(acct.state)}
+										</span>
+									</div>
+									{#if acct.state === 'planned' || acct.state === 'insufficient-source-asset'}
+										<div class="rounded-box border border-warning/35 bg-warning/10 px-3 py-2">
+											<p class="text-[10px] font-semibold tracking-[0.14em] text-warning/80 uppercase">
+												Swap flow
+											</p>
+											<div class="mt-1 flex items-center justify-center gap-2 text-xs font-semibold">
+												<span class="badge badge-ghost badge-sm">{acct.sourceAsset}</span>
+												<span aria-hidden="true" class="text-warning">→</span>
+												<span aria-hidden="true" class="text-warning">→</span>
+												<span aria-hidden="true" class="text-warning">→</span>
+												<span class="badge badge-ghost badge-sm">{acct.targetAsset}</span>
+											</div>
+										</div>
+									{/if}
+									<div class="mt-2 space-y-2 text-sm">
 									<div class="flex justify-between text-base-content/70">
 										<span>1-cycle capital</span><strong
 											>{formatAssetAmount(acct.workingCapitalAmount, acct.targetAsset)}</strong
