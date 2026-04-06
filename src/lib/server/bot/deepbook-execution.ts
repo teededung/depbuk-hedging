@@ -59,6 +59,17 @@ function paidFeesFromEvents(ctx: DeepBookInternalContext, events: any[] | undefi
 	return extractPaidFeesSummary(events, ctx.baseCoin.scalar, ctx.quoteCoin.scalar);
 }
 
+function isSettleDryRunAbortMessage(message: string): boolean {
+	const normalized = message.toLowerCase();
+	return (
+		normalized.includes('dry run failed') &&
+		normalized.includes('moveabort') &&
+		(normalized.includes('identifier("settle")') ||
+			normalized.includes('function_name: some("settle")') ||
+			normalized.includes('::settle'))
+	);
+}
+
 export async function swapExactInWithAggregator(
 	ctx: DeepBookInternalContext,
 	input: {
@@ -68,7 +79,7 @@ export async function swapExactInWithAggregator(
 		amountIn: number;
 		useGasCoin?: boolean;
 	}
-): Promise<AggregatorSwapResult> {
+	): Promise<AggregatorSwapResult> {
 	const amountInAtomic = toAtomicUnits(input.amountIn, ctx.coinScalar(input.coinTypeIn));
 	const { entry: aggregatorEntry, quotes } = await ctx.quoteWithAggregator({
 		amountIn: amountInAtomic.toString(),
@@ -78,21 +89,37 @@ export async function swapExactInWithAggregator(
 	});
 	const metaAg = ctx.metaAgForEntry(aggregatorEntry);
 	const bestQuote = ctx.selectBestAggregatorQuote(quotes);
-	const quoteSummary = {
-		...ctx.summarizeMetaQuote(bestQuote),
-		rpcUrl: aggregatorEntry.url
-	};
-
-	try {
+	const useGasCoinDefault = input.useGasCoin ?? input.coinTypeIn === ctx.coins.SUI.type;
+	const quoteOutput = (quote: (typeof quotes)[number]) =>
+		Number(quote.simulatedAmountOut ?? quote.amountOut);
+	const quoteIdentity = (quote: (typeof quotes)[number]) =>
+		typeof quote.id === 'string' && quote.id.length > 0
+			? `id:${quote.id}`
+			: `${quote.provider}:${quote.amountIn}:${quote.amountOut}:${quote.coinTypeIn}:${quote.coinTypeOut}`;
+	const seenQuoteKeys = new Set<string>();
+	const orderedQuotes = [bestQuote, ...quotes]
+		.sort((a, b) => quoteOutput(b) - quoteOutput(a))
+		.filter((quote) => {
+			const key = quoteIdentity(quote);
+			if (seenQuoteKeys.has(key)) {
+				return false;
+			}
+			seenQuoteKeys.add(key);
+			return true;
+		});
+	const runSwap = async (
+		quote: (typeof quotes)[number],
+		useGasCoin: boolean,
+		quoteSummary: Record<string, unknown>
+	): Promise<AggregatorSwapResult> => {
 		const tx = new Transaction();
-		const useGasCoin = input.useGasCoin ?? input.coinTypeIn === ctx.coins.SUI.type;
 		const coinOut = await metaAg.swap({
-			quote: bestQuote,
+			quote,
 			signer: input.account.address,
 			tx,
 			coinIn: coinWithBalance({
 				type: input.coinTypeIn,
-				balance: BigInt(bestQuote.amountIn),
+				balance: BigInt(quote.amountIn),
 				useGasCoin
 			})
 		});
@@ -103,30 +130,103 @@ export async function swapExactInWithAggregator(
 		});
 
 		return {
-			provider: bestQuote.provider,
+			provider: quote.provider,
 			txDigest: response.digest,
 			gasUsedSui: extractGasUsedSui(response, ctx.coins.SUI.scalar),
-			amountIn: ctx.normalizeCoinAmount(input.coinTypeIn, bestQuote.amountIn),
+			amountIn: ctx.normalizeCoinAmount(input.coinTypeIn, quote.amountIn),
 			amountOut: ctx.normalizeCoinAmount(
 				input.coinTypeOut,
-				bestQuote.simulatedAmountOut ?? bestQuote.amountOut
+				quote.simulatedAmountOut ?? quote.amountOut
 			),
 			coinTypeIn: input.coinTypeIn,
 			coinTypeOut: input.coinTypeOut,
 			quoteSummary
 		};
-	} catch (error) {
-		throw new AggregatorExecutionError(
-			error instanceof Error ? error.message : String(error),
-			{
-				quoteSummary,
-				coinTypeIn: input.coinTypeIn,
-				coinTypeOut: input.coinTypeOut,
-				requestedAmountIn: input.amountIn
-			},
-			error
-		);
+	};
+
+	const attemptedRoutes: Array<Record<string, unknown>> = [];
+	let lastError: unknown;
+	let lastQuoteSummary: Record<string, unknown> | null = null;
+	let settleAbortSeen = false;
+	let gasFallbackTried = false;
+
+	for (const quote of orderedQuotes) {
+		const quoteSummary = {
+			...ctx.summarizeMetaQuote(quote),
+			rpcUrl: aggregatorEntry.url
+		};
+		let shouldTryNonGasFallback = false;
+		const quoteModes = useGasCoinDefault ? [true, false] : [false];
+		for (const mode of quoteModes) {
+			if (useGasCoinDefault && mode === false && !shouldTryNonGasFallback) {
+				continue;
+			}
+			try {
+				return await runSwap(quote, mode, quoteSummary);
+			} catch (error) {
+				lastError = error;
+				lastQuoteSummary = quoteSummary;
+				const message = error instanceof Error ? error.message : String(error);
+				const isSettleAbort = isSettleDryRunAbortMessage(message);
+				if (isSettleAbort) {
+					settleAbortSeen = true;
+				}
+				attemptedRoutes.push({
+					provider: quote.provider,
+					quoteId: quote.id,
+					useGasCoin: mode,
+					error: message,
+					settleAbort: isSettleAbort
+				});
+				if (!isSettleAbort) {
+					throw new AggregatorExecutionError(
+						message,
+						{
+							quoteSummary,
+							coinTypeIn: input.coinTypeIn,
+							coinTypeOut: input.coinTypeOut,
+							requestedAmountIn: input.amountIn,
+							fallbackRetry: {
+								attempted: gasFallbackTried,
+								fromUseGasCoin: useGasCoinDefault
+							},
+							attemptedRoutes
+						},
+						error
+					);
+				}
+				// Some aggregator routes can fail dry-run settle when SUI input is sourced from gas coin.
+				// Retry the same route once with a regular SUI coin before switching to alternate quotes.
+				if (useGasCoinDefault && mode === true) {
+					shouldTryNonGasFallback = true;
+					gasFallbackTried = true;
+					continue;
+				}
+				break;
+			}
+		}
 	}
+
+	const finalMessage = lastError instanceof Error ? lastError.message : String(lastError);
+	throw new AggregatorExecutionError(
+		finalMessage,
+		{
+			quoteSummary: lastQuoteSummary ?? {
+				...ctx.summarizeMetaQuote(bestQuote),
+				rpcUrl: aggregatorEntry.url
+			},
+			coinTypeIn: input.coinTypeIn,
+			coinTypeOut: input.coinTypeOut,
+			requestedAmountIn: input.amountIn,
+			fallbackRetry: {
+				attempted: gasFallbackTried,
+				reason: settleAbortSeen ? 'settle-dry-run-abort' : undefined,
+				fromUseGasCoin: useGasCoinDefault
+			},
+			attemptedRoutes
+		},
+		lastError
+	);
 }
 
 export async function transferUsdcBetweenAccounts(

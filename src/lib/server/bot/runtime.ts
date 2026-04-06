@@ -49,6 +49,7 @@ import {
 	round,
 	shortId,
 	StopRequestedError,
+	summarizeAggregatorDebugMeta,
 	sumCycleOrderFeesUsd,
 	sumCycleOrderGasUsd,
 	sumFilledCycleOrderVolumeUsd
@@ -1426,8 +1427,10 @@ export class BotRuntime {
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
+				const errorContext = extractErrorDebugMeta(error);
 				await this.#appendLog('error', 'Auto-balance: balance sharing transfer failed.', {
 					error: message,
+					errorContext,
 					fromAccount: from.label,
 					toAccount: to.label
 				});
@@ -1492,16 +1495,20 @@ export class BotRuntime {
 					.getWalletBalances(accounts, preview.referencePrice)
 					.catch(() => this.#snapshot.balances);
 				this.#updateBalancesAndPreflight(balances, preview.referencePrice);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				await this.#appendLog('error', `Auto-balance: swap failed for ${account.label}.`, {
-					account: account.label,
-					accountKey: acctPreview.account,
-					error: message
-				});
-				throw error;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					const errorContext = extractErrorDebugMeta(error);
+					const aggregatorContext = summarizeAggregatorDebugMeta(errorContext);
+					await this.#appendLog('error', `Auto-balance: swap failed for ${account.label}.`, {
+						account: account.label,
+						accountKey: acctPreview.account,
+						error: message,
+						errorContext,
+						aggregatorContext
+					});
+					throw error;
+				}
 			}
-		}
 
 		await this.#appendLog('info', 'Auto-balance completed.', { targetCycles });
 		await this.#refreshSnapshot();
@@ -1677,22 +1684,26 @@ export class BotRuntime {
 					);
 
 					await this.#refreshPostCycleFundingBalances(referencePrice);
-				} catch (error) {
-					await this.#appendLog(
-						'warn',
-						`Funding maintenance swap failed for ${account.label}; continuing.`,
-						{
-							account: account.label,
+					} catch (error) {
+						const errorContext = extractErrorDebugMeta(error);
+						const aggregatorContext = summarizeAggregatorDebugMeta(errorContext);
+						await this.#appendLog(
+							'warn',
+							`Funding maintenance swap failed for ${account.label}; continuing.`,
+							{
+								account: account.label,
 							accountKey: account.key,
-							targetAsset: swapPlan.targetAsset,
-							sourceAsset: swapPlan.sourceAsset,
-							shortfallAmount: swapPlan.shortfallAmount,
-							estimatedSourceAmount: swapPlan.estimatedSourceAmount,
-							error: error instanceof Error ? error.message : String(error)
-						}
-					);
+								targetAsset: swapPlan.targetAsset,
+								sourceAsset: swapPlan.sourceAsset,
+								shortfallAmount: swapPlan.shortfallAmount,
+								estimatedSourceAmount: swapPlan.estimatedSourceAmount,
+								error: error instanceof Error ? error.message : String(error),
+								errorContext,
+								aggregatorContext
+							}
+						);
+					}
 				}
-			}
 
 			await this.#appendLog('info', 'Post-cycle funding maintenance completed.', {
 				targetCycles: POST_CYCLE_FUNDING_TARGET_CYCLES

@@ -10,6 +10,7 @@ import {
 	normalizeCleanupQuantity,
 	normalizeQuantity,
 	retryDelayMs,
+	summarizeAggregatorDebugMeta,
 	sumCycleOrderFeesUsd,
 	sumFilledCycleOrderVolumeUsd
 } from './runtime-shared.js';
@@ -40,6 +41,29 @@ describe('runtime-shared', () => {
 			'Dry run failed ... Identifier("margin_manager") ... Some("withdraw") }, 8) in command 4';
 		expect(retryDelayMs(err, 1)).toBe(7000);
 		expect(retryDelayMs(err, 2)).toBe(14000);
+	});
+
+	it('summarizes aggregator debug metadata for readable UI/log context', () => {
+		const summary = summarizeAggregatorDebugMeta({
+			quoteSummary: {
+				provider: 'BLUEFIN7K',
+				routeDexes: ['CETUS', 'BLUEFIN'],
+				routeHops: ['CETUS -> BLUEFIN'],
+				quoteId: 'quote-123',
+				rpcUrl: 'https://rpc.example'
+			}
+		});
+		expect(summary).toContain('provider=BLUEFIN7K');
+		expect(summary).toContain('dex=CETUS>BLUEFIN');
+		expect(summary).toContain('hops=CETUS -> BLUEFIN');
+		expect(summary).toContain('quote=quote-123');
+		expect(summary).toContain('rpc=https://rpc.example');
+	});
+
+	it('returns null summary when debug metadata does not include quote summary', () => {
+		expect(summarizeAggregatorDebugMeta(null)).toBeNull();
+		expect(summarizeAggregatorDebugMeta({})).toBeNull();
+		expect(summarizeAggregatorDebugMeta({ quoteSummary: null })).toBeNull();
 	});
 
 	it('calculates maker bid and ask prices from spread and tick size', () => {

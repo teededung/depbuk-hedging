@@ -29,6 +29,20 @@
 		preview ? preview.accountA.state === 'planned' || preview.accountB.state === 'planned' : false
 	);
 
+	function apiErrorMessage(payload: unknown, fallback: string): string {
+		if (typeof payload !== 'object' || payload === null) {
+			return fallback;
+		}
+		const data = payload as Record<string, unknown>;
+		const errorMessage =
+			typeof data.error === 'string' && data.error.trim().length > 0 ? data.error : fallback;
+		const aggregatorContext =
+			typeof data.aggregatorContext === 'string' && data.aggregatorContext.trim().length > 0
+				? data.aggregatorContext
+				: null;
+		return aggregatorContext ? `${errorMessage}\n${aggregatorContext}` : errorMessage;
+	}
+
 	async function loadPreview(): Promise<void> {
 		previewPending = true;
 		previewError = null;
@@ -43,7 +57,7 @@
 			});
 			const data = await res.json();
 			if (!res.ok || data.error) {
-				throw new Error(data.error || `Preview failed (${res.status})`);
+				throw new Error(apiErrorMessage(data, `Preview failed (${res.status})`));
 			}
 			preview = data.preview as AutoBalancePreview;
 		} catch (error) {
@@ -67,7 +81,7 @@
 			});
 			const data = await res.json();
 			if (!res.ok || data.error) {
-				throw new Error(data.error || `Execute failed (${res.status})`);
+				throw new Error(apiErrorMessage(data, `Execute failed (${res.status})`));
 			}
 			if (data.snapshot) {
 				onExecuted(data.snapshot as RuntimeSnapshot);

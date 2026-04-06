@@ -136,4 +136,29 @@ describe('/api/bot/balance route', () => {
 		expect(body.error).toBe('RPC timeout');
 		expect(body.snapshot).toBeDefined();
 	});
+
+	it('returns aggregator context when runtime error includes debug metadata', async () => {
+		const errorWithMeta = Object.assign(new Error('Dry run failed.'), {
+			debugMeta: {
+				quoteSummary: {
+					provider: 'BLUEFIN7K',
+					routeDexes: ['CETUS'],
+					quoteId: 'quote-abc',
+					rpcUrl: 'https://rpc.example'
+				}
+			}
+		});
+		routeRuntimeState.runtime = createFakeRuntime({
+			executeError: errorWithMeta
+		});
+
+		const response = await postJson({ action: 'execute', targetCycles: 2 });
+		const body = await response.json();
+
+		expect(response.status).toBe(500);
+		expect(body.error).toBe('Dry run failed.');
+		expect(body.aggregatorContext).toContain('provider=BLUEFIN7K');
+		expect(body.aggregatorContext).toContain('dex=CETUS');
+		expect(body.aggregatorContext).toContain('quote=quote-abc');
+	});
 });

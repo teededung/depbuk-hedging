@@ -3,6 +3,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types.js';
 
 import { getBotRuntime } from '$lib/server/bot/runtime.js';
+import { extractErrorDebugMeta, summarizeAggregatorDebugMeta } from '$lib/server/bot/runtime-shared.js';
 
 export const POST: RequestHandler = async ({ request }) => {
 	const runtime = getBotRuntime();
@@ -33,6 +34,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : 'Auto-balance failed.';
-		return json({ error: message, snapshot: runtime.getSnapshot() }, { status: 500 });
+		const errorContext = extractErrorDebugMeta(error);
+		const aggregatorContext = summarizeAggregatorDebugMeta(errorContext);
+		return json(
+			{ error: message, aggregatorContext, errorContext, snapshot: runtime.getSnapshot() },
+			{ status: 500 }
+		);
 	}
 };

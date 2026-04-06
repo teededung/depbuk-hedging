@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { DeepBookInternalContext } from './deepbook-context.js';
 import type { ManagedAccount } from './deepbook.js';
-import { transferSuiBetweenAccounts, transferUsdcBetweenAccounts } from './deepbook-execution.js';
+import {
+	swapExactInWithAggregator,
+	transferSuiBetweenAccounts,
+	transferUsdcBetweenAccounts
+} from './deepbook-execution.js';
 
 function decodeAddressInput(txData: any, inputIndex: number): string {
 	return Buffer.from(txData.inputs[inputIndex].Pure.bytes, 'base64').toString('hex');
@@ -28,6 +32,203 @@ function createAccounts(): { from: ManagedAccount; to: ManagedAccount } {
 		}
 	};
 }
+
+describe('swapExactInWithAggregator', () => {
+	it('retries once without gas coin when settle dry-run abort happens', async () => {
+		const account: ManagedAccount = {
+			key: 'accountB',
+			label: 'Account B',
+			address: '0x4444444444444444444444444444444444444444444444444444444444444444',
+			signer: {} as never
+		};
+		const bestQuote = {
+			provider: 'bluefin7k',
+			id: 'quote-1',
+			coinTypeIn: '0x2::sui::SUI',
+			coinTypeOut: '0xusdc::usdc::USDC',
+			amountIn: '1000000000',
+			amountOut: '800000',
+			rawAmountOut: '800000',
+			simulatedAmountOut: '810000'
+		};
+		const swapCalls: unknown[] = [];
+		const metaAg = {
+			swap: vi.fn(async ({ tx, coinIn }: { tx: any; coinIn: unknown }) => {
+				swapCalls.push(coinIn);
+				return tx.gas;
+			})
+		};
+		let signAttempt = 0;
+		const signAndExecute = vi.fn(async () => {
+			signAttempt += 1;
+			if (signAttempt === 1) {
+				throw new Error(
+					'Dry run failed, could not automatically determine a budget: MoveAbort(MoveLocation { module: ModuleId { address: 17c0..., name: Identifier("settle") }, function: 0, instruction: 56, function_name: Some("settle") }, 0) in command 13'
+				);
+			}
+			return { digest: '0xtx-swap-ok', effects: { gasUsed: {} } };
+		});
+		const ctx = {
+			coins: { SUI: { type: '0x2::sui::SUI', scalar: 1_000_000_000 } },
+			baseCoin: { type: '0x2::sui::SUI', scalar: 1_000_000_000 },
+			quoteCoin: { type: '0xusdc::usdc::USDC', scalar: 1_000_000 },
+			coinScalar: (coinType: string) => (coinType === '0x2::sui::SUI' ? 1_000_000_000 : 1_000_000),
+			normalizeCoinAmount: (_coinType: string, atomicAmount: string | number | bigint) =>
+				Number(atomicAmount) / 1_000_000,
+			quoteWithAggregator: vi.fn(async () => ({
+				entry: { url: 'https://fullnode.mainnet.sui.io:443' },
+				quotes: [bestQuote]
+			})),
+			metaAgForEntry: vi.fn(() => metaAg),
+			selectBestAggregatorQuote: vi.fn(() => bestQuote),
+			summarizeMetaQuote: vi.fn(() => ({ provider: 'bluefin7k', quoteId: 'quote-1' })),
+			signAndExecute,
+			waitForTransaction: vi.fn()
+		} as unknown as DeepBookInternalContext;
+
+		const result = await swapExactInWithAggregator(ctx, {
+			account,
+			coinTypeIn: '0x2::sui::SUI',
+			coinTypeOut: '0xusdc::usdc::USDC',
+			amountIn: 1,
+			useGasCoin: true
+		});
+
+		expect(result.txDigest).toBe('0xtx-swap-ok');
+		expect(signAndExecute).toHaveBeenCalledTimes(2);
+		expect(metaAg.swap).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not retry without gas coin for non-settle errors', async () => {
+		const account: ManagedAccount = {
+			key: 'accountB',
+			label: 'Account B',
+			address: '0x5555555555555555555555555555555555555555555555555555555555555555',
+			signer: {} as never
+		};
+		const bestQuote = {
+			provider: 'bluefin7k',
+			id: 'quote-2',
+			coinTypeIn: '0x2::sui::SUI',
+			coinTypeOut: '0xusdc::usdc::USDC',
+			amountIn: '1000000000',
+			amountOut: '800000',
+			rawAmountOut: '800000'
+		};
+		const metaAg = {
+			swap: vi.fn(async ({ tx }: { tx: any }) => tx.gas)
+		};
+		const signAndExecute = vi.fn(async () => {
+			throw new Error('Unexpected status code: 429');
+		});
+		const ctx = {
+			coins: { SUI: { type: '0x2::sui::SUI', scalar: 1_000_000_000 } },
+			baseCoin: { type: '0x2::sui::SUI', scalar: 1_000_000_000 },
+			quoteCoin: { type: '0xusdc::usdc::USDC', scalar: 1_000_000 },
+			coinScalar: (coinType: string) => (coinType === '0x2::sui::SUI' ? 1_000_000_000 : 1_000_000),
+			normalizeCoinAmount: (_coinType: string, atomicAmount: string | number | bigint) =>
+				Number(atomicAmount) / 1_000_000,
+			quoteWithAggregator: vi.fn(async () => ({
+				entry: { url: 'https://fullnode.mainnet.sui.io:443' },
+				quotes: [bestQuote]
+			})),
+			metaAgForEntry: vi.fn(() => metaAg),
+			selectBestAggregatorQuote: vi.fn(() => bestQuote),
+			summarizeMetaQuote: vi.fn(() => ({ provider: 'bluefin7k', quoteId: 'quote-2' })),
+			signAndExecute,
+			waitForTransaction: vi.fn()
+		} as unknown as DeepBookInternalContext;
+
+		await expect(
+			swapExactInWithAggregator(ctx, {
+				account,
+				coinTypeIn: '0x2::sui::SUI',
+				coinTypeOut: '0xusdc::usdc::USDC',
+				amountIn: 1,
+				useGasCoin: true
+			})
+		).rejects.toThrow('Unexpected status code: 429');
+		expect(signAndExecute).toHaveBeenCalledTimes(1);
+		expect(metaAg.swap).toHaveBeenCalledTimes(1);
+	});
+
+	it('falls back to alternate quotes when the best quote hits settle dry-run abort', async () => {
+		const account: ManagedAccount = {
+			key: 'accountA',
+			label: 'Account A',
+			address: '0x6666666666666666666666666666666666666666666666666666666666666666',
+			signer: {} as never
+		};
+		const bestQuote = {
+			provider: 'bluefin7k',
+			id: 'quote-best',
+			coinTypeIn: '0xusdc::usdc::USDC',
+			coinTypeOut: '0x2::sui::SUI',
+			amountIn: '1000000',
+			amountOut: '1200000000',
+			rawAmountOut: '1200000000',
+			simulatedAmountOut: '1250000000'
+		};
+		const backupQuote = {
+			provider: 'flowx',
+			id: 'quote-backup',
+			coinTypeIn: '0xusdc::usdc::USDC',
+			coinTypeOut: '0x2::sui::SUI',
+			amountIn: '1000000',
+			amountOut: '1100000000',
+			rawAmountOut: '1100000000',
+			simulatedAmountOut: '1100000000'
+		};
+		let activeQuoteId = '';
+		const metaAg = {
+			swap: vi.fn(async ({ tx, quote }: { tx: any; quote: { id: string } }) => {
+				activeQuoteId = quote.id;
+				return tx.gas;
+			})
+		};
+		const signAndExecute = vi.fn(async () => {
+			if (activeQuoteId === 'quote-best') {
+				throw new Error(
+					'Dry run failed, could not automatically determine a budget: MoveAbort(MoveLocation { module: ModuleId { address: 17c0..., name: Identifier("settle") }, function: 0, instruction: 56, function_name: Some("settle") }, 0) in command 51'
+				);
+			}
+			return { digest: '0xtx-quote-fallback', effects: { gasUsed: {} } };
+		});
+		const ctx = {
+			coins: { SUI: { type: '0x2::sui::SUI', scalar: 1_000_000_000 } },
+			baseCoin: { type: '0x2::sui::SUI', scalar: 1_000_000_000 },
+			quoteCoin: { type: '0xusdc::usdc::USDC', scalar: 1_000_000 },
+			coinScalar: (coinType: string) => (coinType === '0x2::sui::SUI' ? 1_000_000_000 : 1_000_000),
+			normalizeCoinAmount: (_coinType: string, atomicAmount: string | number | bigint) =>
+				Number(atomicAmount) / 1_000_000,
+			quoteWithAggregator: vi.fn(async () => ({
+				entry: { url: 'https://fullnode.mainnet.sui.io:443' },
+				quotes: [bestQuote, backupQuote]
+			})),
+			metaAgForEntry: vi.fn(() => metaAg),
+			selectBestAggregatorQuote: vi.fn(() => bestQuote),
+			summarizeMetaQuote: vi.fn((quote: { provider: string; id: string }) => ({
+				provider: quote.provider,
+				quoteId: quote.id
+			})),
+			signAndExecute,
+			waitForTransaction: vi.fn()
+		} as unknown as DeepBookInternalContext;
+
+		const result = await swapExactInWithAggregator(ctx, {
+			account,
+			coinTypeIn: '0xusdc::usdc::USDC',
+			coinTypeOut: '0x2::sui::SUI',
+			amountIn: 1,
+			useGasCoin: false
+		});
+
+		expect(result.provider).toBe('flowx');
+		expect(result.txDigest).toBe('0xtx-quote-fallback');
+		expect(signAndExecute).toHaveBeenCalledTimes(2);
+		expect(metaAg.swap).toHaveBeenCalledTimes(2);
+	});
+});
 
 describe('transferUsdcBetweenAccounts', () => {
 	it('uses sender wallet USDC and transfers to recipient with expected coin type', async () => {

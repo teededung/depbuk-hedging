@@ -51,6 +51,60 @@ export function extractErrorDebugMeta(error: unknown): Record<string, unknown> |
 	return debugMeta as Record<string, unknown>;
 }
 
+function stringValue(value: unknown): string | null {
+	if (typeof value !== 'string') {
+		return null;
+	}
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function stringArrayValue(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.map((item) => stringValue(item)).filter((item): item is string => item !== null);
+}
+
+export function summarizeAggregatorDebugMeta(
+	debugMeta: Record<string, unknown> | null
+): string | null {
+	if (!debugMeta) {
+		return null;
+	}
+
+	const quoteSummary = debugMeta.quoteSummary;
+	if (typeof quoteSummary !== 'object' || quoteSummary === null) {
+		return null;
+	}
+
+	const quoteMeta = quoteSummary as Record<string, unknown>;
+	const provider = stringValue(quoteMeta.provider);
+	const quoteId = stringValue(quoteMeta.quoteId);
+	const rpcUrl = stringValue(quoteMeta.rpcUrl);
+	const routeDexes = stringArrayValue(quoteMeta.routeDexes).slice(0, 3);
+	const routeHops = stringArrayValue(quoteMeta.routeHops).slice(0, 1);
+	const parts: string[] = [];
+
+	if (provider) {
+		parts.push(`provider=${provider}`);
+	}
+	if (routeDexes.length > 0) {
+		parts.push(`dex=${routeDexes.join('>')}`);
+	}
+	if (routeHops.length > 0) {
+		parts.push(`hops=${routeHops[0]}`);
+	}
+	if (quoteId) {
+		parts.push(`quote=${quoteId}`);
+	}
+	if (rpcUrl) {
+		parts.push(`rpc=${rpcUrl}`);
+	}
+
+	return parts.length > 0 ? `Aggregator context: ${parts.join(' | ')}` : null;
+}
+
 export function randomBetween(min: number, max: number): number {
 	return Math.random() * (max - min) + min;
 }
