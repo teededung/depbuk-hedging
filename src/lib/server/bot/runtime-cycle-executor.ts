@@ -58,8 +58,17 @@ export class RuntimeCycleExecutor {
 			service.getOrderBookTop(accounts)
 		);
 
+		// Re-load wallet balances right before sizing to avoid stale snapshot funding decisions
+		// after cleanup/top-up activity between cycles.
+		const balances =
+			typeof service.getWalletBalances === 'function'
+				? await service
+						.getWalletBalances(accounts, book.midPrice)
+						.catch(() => this.#ctx.getSnapshot().balances)
+				: this.#ctx.getSnapshot().balances;
+		this.#ctx.updateBalancesAndPreflight(balances, book.midPrice);
+
 		// Compute effective notional using shared sizing logic
-		const balances = this.#ctx.getSnapshot().balances;
 		const sizing = computeEffectiveNotional({
 			config,
 			balances,

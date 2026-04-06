@@ -185,6 +185,62 @@ export function sumFilledCycleOrderVolumeUsd(orders: CycleOrderRecord[]): number
 	);
 }
 
+export function realizedTradingPnlUsdFromFilledOrders(orders: CycleOrderRecord[]): number {
+	type SidePhaseSummary = {
+		openQty: number;
+		openNotional: number;
+		closeQty: number;
+		closeNotional: number;
+	};
+
+	const summary: Record<'LONG' | 'SHORT', SidePhaseSummary> = {
+		LONG: { openQty: 0, openNotional: 0, closeQty: 0, closeNotional: 0 },
+		SHORT: { openQty: 0, openNotional: 0, closeQty: 0, closeNotional: 0 }
+	};
+
+	for (const order of orders) {
+		if (order.status !== 'filled') {
+			continue;
+		}
+		const quantity = Number.isFinite(order.filledQuantity)
+			? (order.filledQuantity ?? 0)
+			: Number.isFinite(order.quantity)
+				? (order.quantity ?? 0)
+				: 0;
+		const price = Number.isFinite(order.filledPrice)
+			? (order.filledPrice ?? 0)
+			: Number.isFinite(order.price)
+				? (order.price ?? 0)
+				: 0;
+		if (quantity <= 0 || price <= 0) {
+			continue;
+		}
+
+		const bucket = summary[order.side];
+		if (order.phase === 'OPEN') {
+			bucket.openQty += quantity;
+			bucket.openNotional += quantity * price;
+			continue;
+		}
+		bucket.closeQty += quantity;
+		bucket.closeNotional += quantity * price;
+	}
+
+	const avg = (notional: number, quantity: number): number => (quantity > 0 ? notional / quantity : 0);
+	const longOpenPrice = avg(summary.LONG.openNotional, summary.LONG.openQty);
+	const longClosePrice = avg(summary.LONG.closeNotional, summary.LONG.closeQty);
+	const shortOpenPrice = avg(summary.SHORT.openNotional, summary.SHORT.openQty);
+	const shortClosePrice = avg(summary.SHORT.closeNotional, summary.SHORT.closeQty);
+	const matchedLongQty = Math.min(summary.LONG.openQty, summary.LONG.closeQty);
+	const matchedShortQty = Math.min(summary.SHORT.openQty, summary.SHORT.closeQty);
+
+	return round(
+		matchedLongQty * (longClosePrice - longOpenPrice) +
+			matchedShortQty * (shortOpenPrice - shortClosePrice),
+		6
+	);
+}
+
 export function freshestLogs(currentLogs: BotLogEntry[], candidateLogs: BotLogEntry[]): BotLogEntry[] {
 	const currentLatestId = currentLogs[currentLogs.length - 1]?.id ?? 0;
 	const candidateLatestId = candidateLogs[candidateLogs.length - 1]?.id ?? 0;
@@ -261,6 +317,15 @@ export function isMarginWithdrawNotReadyErrorMessage(message: string): boolean {
 			normalized.includes('margin_manager::withdraw')) &&
 		normalized.includes('some("withdraw")') &&
 		normalized.includes('}, 8)')
+	);
+}
+
+export function isInsufficientCycleFundingErrorMessage(message: string): boolean {
+	const normalized = message.toLowerCase();
+	return (
+		normalized.startsWith('account a needs ') ||
+		normalized.startsWith('account b needs ') ||
+		normalized.includes('funding short. cannot cover even the minimum notional')
 	);
 }
 

@@ -39,6 +39,7 @@ import {
 	FatalRuntimeError,
 	freshestLogs,
 	isFatalRuntimeErrorMessage,
+	isInsufficientCycleFundingErrorMessage,
 	isRateLimitedErrorMessage,
 	MANAGER_CACHE_DISCOVERY_TTL_MS,
 	mapWithConcurrency,
@@ -46,6 +47,7 @@ import {
 	normalizeQuantity,
 	nowIso,
 	randomInt,
+	realizedTradingPnlUsdFromFilledOrders,
 	retryDelayMs,
 	round,
 	shortId,
@@ -624,6 +626,7 @@ export class BotRuntime {
 				if (error instanceof StopRequestedError) {
 					break;
 				}
+				const errorMessage = error instanceof Error ? error.message : String(error);
 				const cycleNumber = this.#snapshot.activeCycle?.cycleNumber ?? null;
 				const shouldAutoCleanAfterFailure = this.#currentCycleOrders.some(
 					(order) =>
@@ -634,14 +637,11 @@ export class BotRuntime {
 				);
 				const postFailureCleanupRunId = shouldAutoCleanAfterFailure ? cleanupRunId() : null;
 
-				await this.#finalizeCurrentCycle(
-					'failed',
-					error instanceof Error ? error.message : 'Cycle failed.'
-				);
+				await this.#finalizeCurrentCycle('failed', errorMessage);
 
 				if (error instanceof FatalRuntimeError) {
 					await this.#appendLog('error', 'Cycle failed. Bot stopped without retry.', {
-						error: error.message
+						error: errorMessage
 					});
 					await this.#forceFlatten(false);
 					this.#manualStop = true;
@@ -655,8 +655,24 @@ export class BotRuntime {
 					break;
 				}
 
+				if (isInsufficientCycleFundingErrorMessage(errorMessage)) {
+					const normalizedFundingMessage = errorMessage.replace(/[.\s]+$/g, '');
+					await this.#appendLog('error', 'Cycle failed due to insufficient funding. Bot stopped.', {
+						error: errorMessage
+					});
+					this.#manualStop = true;
+					this.#stopRequested = true;
+					this.#setSnapshot({
+						lifecycle: 'STOPPED',
+						liveLabel: 'Offline',
+						runLabel: 'STOPPED',
+						message: `Bot stopped: ${normalizedFundingMessage}. Top up wallet balances or lower notional, then start again.`
+					});
+					break;
+				}
+
 				await this.#appendLog('error', 'Cycle failed.', {
-					error: error instanceof Error ? error.message : String(error)
+					error: errorMessage
 				});
 
 				if (shouldAutoCleanAfterFailure) {
@@ -701,7 +717,7 @@ export class BotRuntime {
 					lifecycle: 'ERROR',
 					liveLabel: 'Offline',
 					runLabel: 'ERROR',
-					message: error instanceof Error ? error.message : 'Cycle failed.'
+					message: errorMessage
 				});
 
 				if (this.#stopRequested) {
@@ -1198,15 +1214,18 @@ export class BotRuntime {
 		}
 
 		await this.#db.updateCycleOrders(this.#currentCycleId, this.#currentCycleOrders);
+		const feesUsd = sumCycleOrderFeesUsd(this.#currentCycleOrders);
+		const gasUsd = round(
+			sumCycleOrderGasUsd(this.#currentCycleOrders) + this.#currentCycleAuxiliaryGasUsd,
+			6
+		);
+		const realizedTradingPnlUsd = realizedTradingPnlUsdFromFilledOrders(this.#currentCycleOrders);
 		await this.#db.finishCycle(this.#currentCycleId, {
 			status,
 			volumeUsd: sumFilledCycleOrderVolumeUsd(this.#currentCycleOrders),
-			feesUsd: sumCycleOrderFeesUsd(this.#currentCycleOrders),
-			gasUsd: round(
-				sumCycleOrderGasUsd(this.#currentCycleOrders) + this.#currentCycleAuxiliaryGasUsd,
-				6
-			),
-			pnlUsd: 0,
+			feesUsd,
+			gasUsd,
+			pnlUsd: round(realizedTradingPnlUsd - feesUsd - gasUsd, 6),
 			holdSecondsActual,
 			closePrice,
 			orders: this.#currentCycleOrders,
@@ -1244,6 +1263,13 @@ export class BotRuntime {
 			.catch(() => this.#snapshot.balances);
 		const startReadiness = await this.#loadStartReadiness();
 		const preflight = this.#buildPreflightSnapshot(balances, livePrice.price, startReadiness);
+		const shouldRefreshStoppedStatusMessage =
+			this.#snapshot.lifecycle === 'STOPPED' &&
+			(this.#snapshot.message.startsWith('Bot stopped: Funding short.') ||
+				this.#snapshot.message.startsWith('Start blocked:'));
+		const nextStoppedStatusMessage = preflight.ready
+			? 'Bot ready. Press Start to begin trading.'
+			: this.#startBlockedMessage(preflight);
 
 		this.#setSnapshot({
 			price: {
@@ -1254,6 +1280,7 @@ export class BotRuntime {
 			},
 			balances,
 			preflight,
+			message: shouldRefreshStoppedStatusMessage ? nextStoppedStatusMessage : this.#snapshot.message,
 			updatedAt: nowIso()
 		});
 	}
