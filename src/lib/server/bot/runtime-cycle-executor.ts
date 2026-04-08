@@ -11,6 +11,7 @@ import {
 	clientOrderId,
 	extractErrorDebugMeta,
 	FatalRuntimeError,
+	isBalanceWithdrawWithProofNotReadyErrorMessage,
 	isFatalRuntimeErrorMessage,
 	isPostOnlyCrossErrorMessage,
 	isRateLimitedErrorMessage,
@@ -411,22 +412,48 @@ export class RuntimeCycleExecutor {
 
 		await this.#ctx.randomDelay();
 
-		const shortClose =
-			closeExecutionMode === 'market'
-				? await this.submitShortCloseMarketOrder({
-						account: accounts.accountB,
-						closeState: accountBState,
-						referencePrice: closeBook.midPrice
-					})
-				: await this.submitMakerOrder({
-						account: accounts.accountB,
+		let shortClose: { orderIndex: number; orderId: string; price: number };
+		if (closeExecutionMode === 'market') {
+			shortClose = await this.submitShortCloseMarketOrder({
+				account: accounts.accountB,
+				closeState: accountBState,
+				referencePrice: closeBook.midPrice
+			});
+		} else {
+			try {
+				shortClose = await this.submitMakerOrder({
+					account: accounts.accountB,
+					side: 'SHORT',
+					phase: 'CLOSE',
+					isBid: true,
+					price: makerBidPrice(closeBook.bestBid, closeBook.bestAsk, closeBook.tickSize),
+					quantity: shortCloseQuantity!,
+					notionalUsd: round(shortCloseQuantity! * closeBook.midPrice, 4)
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (!isBalanceWithdrawWithProofNotReadyErrorMessage(message)) {
+					throw error;
+				}
+				await this.#ctx.appendLog(
+					'warn',
+					'SHORT close maker submit hit withdraw_with_proof not-ready; switching to dedicated market repay fallback.',
+					{
+						account: accounts.accountB.label,
+						accountKey: accounts.accountB.key,
 						side: 'SHORT',
 						phase: 'CLOSE',
-						isBid: true,
-						price: makerBidPrice(closeBook.bestBid, closeBook.bestAsk, closeBook.tickSize),
-						quantity: shortCloseQuantity!,
-						notionalUsd: round(shortCloseQuantity! * closeBook.midPrice, 4)
-					});
+						cycleNumber,
+						error: message
+					}
+				);
+				shortClose = await this.submitShortCloseMarketOrder({
+					account: accounts.accountB,
+					closeState: accountBState,
+					referencePrice: closeBook.midPrice
+				});
+			}
+		}
 
 		const closedLong = await this.waitForFullFill(
 			longClose.orderIndex,
@@ -1770,13 +1797,14 @@ export class RuntimeCycleExecutor {
 						? makerBidPrice(book.bestBid, book.bestAsk, book.tickSize)
 						: makerAskPrice(book.bestBid, book.bestAsk, book.tickSize);
 			let residualQuantity = remainingQuantity;
+			let closeResidualState: CloseState | null = null;
 			if (orderRecord.phase === 'CLOSE') {
-				const { closeQuantity } = await this.reloadCloseResidualState(
+				closeResidualState = await this.reloadCloseResidualState(
 					account,
 					this.#ctx.getSnapshot().activeCycle?.cycleNumber ?? 0,
 					orderRecord.side
 				);
-				residualQuantity = closeQuantity;
+				residualQuantity = closeResidualState.closeQuantity;
 			} else {
 				const { residualQuantity: openResidualQuantity } = await this.reloadOpenResidualState(
 					account,
@@ -1838,15 +1866,51 @@ export class RuntimeCycleExecutor {
 				);
 			}
 
-			const replacement = await this.submitMakerOrder({
-				account,
-				side: orderRecord.side,
-				phase: orderRecord.phase,
-				isBid: orderRecord.isBid,
-				price: reprice,
-				quantity: remaining,
-				notionalUsd: round(remaining * reprice, 4)
-			});
+			let replacement: { orderIndex: number; orderId: string; price: number };
+			try {
+				replacement = await this.submitMakerOrder({
+					account,
+					side: orderRecord.side,
+					phase: orderRecord.phase,
+					isBid: orderRecord.isBid,
+					price: reprice,
+					quantity: remaining,
+					notionalUsd: round(remaining * reprice, 4)
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				const shouldFallbackToShortCloseMarket =
+					orderRecord.phase === 'CLOSE' &&
+					orderRecord.side === 'SHORT' &&
+					isBalanceWithdrawWithProofNotReadyErrorMessage(message);
+				if (!shouldFallbackToShortCloseMarket) {
+					throw error;
+				}
+				await this.#ctx.appendLog(
+					'warn',
+					'SHORT close maker residual retry hit withdraw_with_proof not-ready; switching to dedicated market repay fallback.',
+					{
+						account: account.label,
+						accountKey: account.key,
+						side: orderRecord.side,
+						phase: orderRecord.phase,
+						cycleNumber: this.#ctx.getSnapshot().activeCycle?.cycleNumber,
+						error: message
+					}
+				);
+				const fallbackCloseState =
+					closeResidualState ??
+					(await this.reloadCloseResidualState(
+						account,
+						this.#ctx.getSnapshot().activeCycle?.cycleNumber ?? 0,
+						'SHORT'
+					));
+				replacement = await this.submitShortCloseMarketOrder({
+					account,
+					closeState: fallbackCloseState,
+					referencePrice: book.midPrice
+				});
+			}
 
 			totalPaidFees = currentPaidFees();
 			orderIndex = replacement.orderIndex;

@@ -394,6 +394,104 @@ describe('runtime-cycle-executor', () => {
 		).toBe(true);
 	});
 
+	it('falls back to dedicated SHORT close market repay when residual maker retry hits withdraw_with_proof', async () => {
+		let limitSubmitCalls = 0;
+		const placeMarginLimitOrder = vi.fn().mockImplementation(async (input) => {
+			limitSubmitCalls += 1;
+			if (limitSubmitCalls === 1) {
+				return {
+					txDigest: 'tx-short-close-1',
+					orderId: 'short-close-1',
+					clientOrderId: input.clientOrderId,
+					paidFeesQuote: 0,
+					gasUsedSui: 0
+				};
+			}
+			throw new Error(
+				'Dry run failed, could not automatically determine a budget: MoveAbort(MoveLocation { module: ModuleId { address: 0x1, name: Identifier("balance_manager") }, function: 37, instruction: 45, function_name: Some("withdraw_with_proof") }, 3) in command 1'
+			);
+		});
+		const placeShortCloseMarketOrderAndRepayBase = vi.fn().mockResolvedValue({
+			txDigest: 'tx-short-close-fallback-market',
+			orderId: undefined,
+			clientOrderId: 'ignored',
+			paidFeesQuote: 0,
+			gasUsedSui: 0.001,
+			filledQuantity: 6,
+			averageFillPrice: 10.05,
+			computedBuyQuantity: 6,
+			computedQuoteBudget: 60.3
+		});
+		const service = {
+			getAccountOpenOrders: vi.fn().mockResolvedValue([]),
+			placeMarginLimitOrder,
+			getOrder: vi.fn().mockImplementation(async (_account, orderId) => {
+				if (orderId === 'short-close-1') {
+					return { quantity: 10, filledQuantity: 4 };
+				}
+				return null;
+			}),
+			cancelAllOrders: vi.fn().mockResolvedValue(undefined),
+			withdrawSettled: vi.fn().mockResolvedValue(undefined),
+			getOrderBookTop: vi.fn().mockResolvedValue({
+				bestBid: 10,
+				bestAsk: 10.1,
+				tickSize: 0.1,
+				lotSize: 1,
+				minSize: 1,
+				midPrice: 10.05
+			}),
+			getMarginManagerState: vi.fn().mockResolvedValue({
+				managerId: 'manager-accountB',
+				balanceManagerId: 'balance-accountB',
+				baseAsset: 4,
+				quoteAsset: 12,
+				baseDebt: 6,
+				quoteDebt: 0,
+				riskRatio: 0,
+				currentPrice: 10.05
+			}),
+			placeShortCloseMarketOrderAndRepayBase,
+			placeLongCloseMarketOrderAndRepayQuote: vi.fn(),
+			placeMarginMarketOrder: vi.fn()
+		};
+		const { context, accounts, logs, currentCycleOrders } = createContext(service, {
+			close_order_execution_mode: 'limit'
+		});
+		const executor = new RuntimeCycleExecutor(context);
+
+		const submitted = await executor.submitMakerOrder({
+			account: accounts.accountB,
+			side: 'SHORT',
+			phase: 'CLOSE',
+			isBid: true,
+			price: 10,
+			quantity: 10,
+			notionalUsd: 100
+		});
+
+		await expect(executor.waitForFullFill(submitted.orderIndex, 10)).resolves.toBeTruthy();
+
+		expect(placeMarginLimitOrder).toHaveBeenCalledTimes(4);
+		expect(placeShortCloseMarketOrderAndRepayBase).toHaveBeenCalledTimes(1);
+		expect(
+			logs.some((entry) =>
+				entry.message.includes(
+					'SHORT close maker residual retry hit withdraw_with_proof not-ready; switching to dedicated market repay fallback.'
+				)
+			)
+		).toBe(true);
+		expect(
+			currentCycleOrders.some(
+				(order) =>
+					order.side === 'SHORT' &&
+					order.phase === 'CLOSE' &&
+					order.status === 'filled' &&
+					order.txDigest === 'tx-short-close-fallback-market'
+			)
+		).toBe(true);
+	});
+
 	it('routes OPEN and SHORT CLOSE submits through market execution when configured', async () => {
 		const marketCalls: Array<{ phase: 'OPEN' | 'CLOSE'; isBid: boolean; quantity: number }> = [];
 		const limitOrder = vi.fn();
